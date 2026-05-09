@@ -1,0 +1,86 @@
+from transformers import pipeline
+from deep_translator import GoogleTranslator
+import re
+
+print("Loading sentiment + emotion models...")
+
+# Models
+sentiment_model = pipeline("sentiment-analysis")
+
+emotion_model = pipeline(
+    "text-classification",
+    model="j-hartmann/emotion-english-distilroberta-base",
+    top_k=None
+)
+
+# Detect if text is likely romanized (no native script)
+def is_romanized(text):
+    return bool(re.match("^[A-Za-zāēīōūḍṭṇṁ ]+$", text))
+
+
+def predict_sentiment(text):
+    """Analyze sentiment and emotions of the given text.
+
+    Returns sentiment (POSITIVE/NEGATIVE/NEUTRAL), confidence scores,
+    all emotion scores, and text metadata.
+    """
+    if not text or not text.strip():
+        raise ValueError("Input text cannot be empty")
+
+    translated = text
+
+    try:
+        # Step 1: Translate (auto handles Hindi/Marathi normally)
+        translated = GoogleTranslator(source='auto', target='en').translate(text)
+
+        # Step 2: If translation failed (same text returned), retry logic
+        if translated.strip().lower() == text.strip().lower():
+            # fallback: assume it's already English OR weak translation
+            translated = text
+
+    except Exception as e:
+        print(f"Translation warning: {e}")
+        translated = text  # fallback safety
+
+    # Step 3: Sentiment
+    sentiment_result = sentiment_model(translated)[0]
+    label = sentiment_result["label"]
+    score = sentiment_result["score"]
+
+    text_lower = translated.lower()
+
+    # Smart Neutral Handling
+    neutral_phrases = [
+        "nothing special", "okay", "fine", "average", "not bad",
+        "so so", "no big deal", "nothing much",
+        "कोई खास बात नहीं", "कुछ खास नहीं", "ठीक है",
+        "काही खास नाही", "ठीक आहे"
+    ]
+
+    if any(phrase in text_lower for phrase in neutral_phrases):
+        sentiment = "NEUTRAL"
+    elif score < 0.75:
+        sentiment = "NEUTRAL"
+    else:
+        sentiment = label
+
+    # Step 4: All Emotions (return full breakdown, not just top)
+    emotions = emotion_model(translated)[0]
+    all_emotions = {e["label"]: round(e["score"], 4) for e in emotions}
+    best_emotion = max(emotions, key=lambda x: x['score'])
+
+    # Step 5: Text metadata
+    word_count = len(text.split())
+    char_count = len(text)
+
+    return {
+        "original_text": text,
+        "translated_text": translated,
+        "sentiment": sentiment,
+        "sentiment_confidence": round(score, 3),
+        "emotion": best_emotion["label"],
+        "emotion_confidence": round(best_emotion["score"], 3),
+        "all_emotions": all_emotions,
+        "word_count": word_count,
+        "char_count": char_count,
+    }
